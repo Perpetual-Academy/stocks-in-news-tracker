@@ -7,7 +7,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - PYTHONUNBUFFERED=1
+      PYTHONUNBUFFERED: "1"
+      CREDENTIALS_PATH: /data/Credentials.txt
     volumes:
-      - ./Credentials.txt:/app/Credentials.txt
+      - tracker-data:/data
     restart: unless-stopped
+
+volumes:
+  tracker-data:

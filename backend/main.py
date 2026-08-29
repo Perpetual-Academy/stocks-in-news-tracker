@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,7 +15,7 @@ from pydantic import BaseModel, Field
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
-CREDENTIALS_PATH = ROOT_DIR / "Credentials.txt"
+CREDENTIALS_PATH = Path(os.environ.get("CREDENTIALS_PATH", ROOT_DIR / "Credentials.txt"))
 FRONTEND_DIST_PATH = ROOT_DIR / "frontend" / "dist"
 LIVE_INSTRUMENTS = {
     2885: "RELIANCE",
