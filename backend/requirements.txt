@@ -1,0 +1,6 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.8.2
+shareconnect==1.0.0.11
+pycryptodome>=3.20.0
+websocket-client>=1.8.0

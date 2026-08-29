@@ -1,0 +1,13 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        VITE_API_BASE_URL: /api
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./Credentials.txt:/app/Credentials.txt
+    restart: unless-stopped
