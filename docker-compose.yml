@@ -5,7 +5,13 @@ services:
       args:
         VITE_API_BASE_URL: /api
     ports:
-      - "8000:8000"
+      - "8000"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME}.rule=Host(`tracker.perpetualprofits.in`)
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME}.entrypoints=websecure
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME}.tls.certresolver=letsencrypt
+      - traefik.http.services.${COMPOSE_PROJECT_NAME}.loadbalancer.server.port=8000
     environment:
       PYTHONUNBUFFERED: "1"
       CREDENTIALS_PATH: /data/Credentials.txt
