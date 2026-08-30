@@ -8,10 +8,13 @@ services:
       - "8000"
     labels:
       - traefik.enable=true
-      - traefik.http.routers.${COMPOSE_PROJECT_NAME}.rule=Host(`tracker.perpetualprofits.in`)
-      - traefik.http.routers.${COMPOSE_PROJECT_NAME}.entrypoints=websecure
-      - traefik.http.routers.${COMPOSE_PROJECT_NAME}.tls.certresolver=letsencrypt
-      - traefik.http.services.${COMPOSE_PROJECT_NAME}.loadbalancer.server.port=8000
+      - traefik.http.routers.tracker.rule=Host(`tracker.perpetualprofits.in`)
+      - traefik.http.routers.tracker.entrypoints=websecure
+      - traefik.http.routers.tracker.tls.certresolver=letsencrypt
+      - traefik.http.routers.tracker.middlewares=tracker-api-prefix
+      - traefik.http.services.tracker.loadbalancer.server.port=8000
+      - traefik.http.middlewares.tracker-api-prefix.replacepathregex.regex=^/api/api/(.*)
+      - traefik.http.middlewares.tracker-api-prefix.replacepathregex.replacement=/api/$$1
     environment:
       PYTHONUNBUFFERED: "1"
       CREDENTIALS_PATH: /data/Credentials.txt
