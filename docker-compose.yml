@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        VITE_API_BASE_URL: /api
+        VITE_API_BASE_URL: ""
     ports:
       - "8000"
     labels:
