@@ -3,6 +3,14 @@ import React, { useEffect, useState } from "react";
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 const tabs = ["User", "Live Feed", "Setup"];
 
+function getErrorMessage(detail, fallback) {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((item) => item.msg || "Invalid request").join(" ");
+  }
+  return fallback;
+}
+
 export default function App() {
   const [screen, setScreen] = useState("login");
   const [tab, setTab] = useState("User");
@@ -33,7 +41,7 @@ export default function App() {
     const res = await fetch(`${API_BASE}/api/profile`);
     const data = await res.json();
     if (!res.ok) {
-      setStatus(data.detail || "Unable to load profile");
+      setStatus(getErrorMessage(data.detail, "Unable to load profile"));
       return;
     }
     setProfile(data);
@@ -44,7 +52,7 @@ export default function App() {
       const res = await fetch(`${API_BASE}/api/live-prices`);
       const data = await res.json();
       if (!res.ok) {
-        setStatus(data.detail || "Unable to load live prices");
+        setStatus(getErrorMessage(data.detail, "Unable to load live prices"));
         return;
       }
       setLiveFeed(data);
@@ -72,7 +80,7 @@ export default function App() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setStatus(data.detail || "Login failed");
+        setStatus(getErrorMessage(data.detail, "Login failed"));
         return;
       }
       setStatus("Access token saved.");
