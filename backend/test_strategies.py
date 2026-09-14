@@ -61,16 +61,14 @@ class UmbraTests(unittest.TestCase):
         self.assertIn("%27Tracker%27%21A%3AF", client.get.call_args.args[0])
         client.post.assert_not_called()
 
-    def test_live_enable_is_rejected(self):
+    def test_enable_without_required_settings_is_rejected(self):
         from backend.main import toggle_umbra, UmbraToggle
         from fastapi import HTTPException
-        from starlette.requests import Request
-        request = Request({"type": "http", "client": ("127.0.0.1", 1234)})
         with tempfile.TemporaryDirectory() as folder, patch.object(s, "DB_PATH", Path(folder) / "test.sqlite3"):
             with self.assertRaises(HTTPException) as error:
-                toggle_umbra(UmbraToggle(enabled=True), request)
+                toggle_umbra(UmbraToggle(enabled=True))
             self.assertEqual(error.exception.status_code, 409)
-            self.assertFalse(toggle_umbra(UmbraToggle(enabled=False), request)["enabled"])
+            self.assertFalse(toggle_umbra(UmbraToggle(enabled=False))["enabled"])
 
 
 if __name__ == "__main__":

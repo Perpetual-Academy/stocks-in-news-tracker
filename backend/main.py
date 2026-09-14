@@ -483,8 +483,7 @@ def umbra_status():
 
 
 @app.put("/api/strategies/umbra")
-def save_umbra(payload: strategies.UmbraSettings, request: Request):
-    require_local_strategy_control(request)
+def save_umbra(payload: strategies.UmbraSettings):
     try:
         return strategies.save_settings(payload)
     except ValueError as exc:
@@ -501,8 +500,7 @@ class UmbraToggle(BaseModel):
 
 
 @app.put("/api/strategies/umbra/enabled")
-def toggle_umbra(payload: UmbraToggle, request: Request):
-    require_local_strategy_control(request)
+def toggle_umbra(payload: UmbraToggle):
     try:
         return strategies.toggle(payload.enabled)
     except ValueError as exc:
@@ -511,19 +509,12 @@ def toggle_umbra(payload: UmbraToggle, request: Request):
         raise HTTPException(status_code=502, detail="Could not verify the ShareConnect session. Umbra was not enabled.") from None
 
 
-def require_local_strategy_control(request: Request):
-    # The existing app has no browser authentication; do not expose live trading controls publicly.
-    if not request.client or request.client.host not in {"127.0.0.1", "::1"}:
-        raise HTTPException(status_code=403, detail="Control Umbra from the local app. Remote trading controls require authentication.")
-
-
 class UmbraReview(BaseModel):
     day: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
 
 
 @app.post("/api/strategies/umbra/verify-closed")
-def verify_umbra_closed(payload: UmbraReview, request: Request):
-    require_local_strategy_control(request)
+def verify_umbra_closed(payload: UmbraReview):
     try:
         return strategies.verify_closed(payload.day)
     except ValueError as exc:
