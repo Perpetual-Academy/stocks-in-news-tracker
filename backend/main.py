@@ -8,10 +8,21 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from pydantic import BaseModel, Field
+from backend.extractor import extract_articles
+from backend.ai_influence import apply_ai_fallback
+from backend.ai_settings import AISettings, load_settings, public_settings, save_settings
+from backend.ai_models import groq_models
+from backend.stock_selection import apply_selection
+from backend import google_sheets
+from backend import strategies
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
@@ -33,7 +44,25 @@ class LoginPayload(BaseModel):
     version_id: str | None = None
 
 
-app = FastAPI(title="ShareConnect Token Service")
+@asynccontextmanager
+async def lifespan(app):
+    strategies.start_worker()
+    yield
+    strategies.stop_worker()
+
+
+app = FastAPI(title="ShareConnect Token Service", lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request, exc):
+    if request.url.path.startswith("/api/google-sheets"):
+        return JSONResponse(status_code=422, content={"detail": "Check the service-account file, date, and selected stocks. Only Positive, Negative, or Neutral influence can be appended."})
+    if request.url.path in {"/api/ai-settings", "/api/ai-models"}:
+        return JSONResponse(status_code=422, content={"detail": "Check the provider, API format, HTTPS base URL, model, and API key."})
+    return await request_validation_exception_handler(request, exc)
+
+
 app.add_middleware(
     CORSMiddleware,
     # Vite selects the next available port during local development, and the
@@ -139,6 +168,19 @@ def generate_access_token(payload: LoginPayload) -> str:
     token = extract_access_token(result)
     if not token:
         raise HTTPException(status_code=502, detail="ShareConnect did not return an access token.")
+    envelope = result
+    if isinstance(envelope, str):
+        try:
+            envelope = json.loads(envelope)
+        except (TypeError, ValueError):
+            envelope = {}
+    account = envelope.get("data", {}) if isinstance(envelope, dict) else {}
+    if not isinstance(account, dict):
+        account = {}
+    with strategies.LOCK:
+        write_credentials({"customer_id": str(account.get("customerId") or ""),
+                           "login_id": str(account.get("loginId") or ""), "access_token": token,
+                           "api_key": payload.api_key, "vendor_key": payload.vendor_key or ""})
     return token
 
 
@@ -177,8 +219,18 @@ def fetch_live_prices(access_token: str) -> list[dict[str, Any]]:
                 }
             )
         )
+        socket.send(
+            json.dumps(
+                {
+                    "action": "feed",
+                    "key": ["depth"],
+                    "value": [",".join(f"NC{code}" for code in LIVE_INSTRUMENTS)],
+                }
+            )
+        )
 
         deadline = time.monotonic() + 12
+        latest_by_code: dict[int, dict[str, Any]] = {}
         while time.monotonic() < deadline:
             raw_message = socket.recv()
             if not isinstance(raw_message, str):
@@ -192,17 +244,19 @@ def fetch_live_prices(access_token: str) -> list[dict[str, Any]]:
                 code = item.get("scripCode")
                 if code not in LIVE_INSTRUMENTS:
                     continue
-                prices.append(
-                    {
-                        "symbol": LIVE_INSTRUMENTS[code],
-                        "scrip_code": code,
-                        "ltp": item.get("ltp"),
-                        "change": item.get("rsChange"),
-                        "percent_change": item.get("perChange"),
-                        "last_traded_at": item.get("ltt") or item.get("lastUpdatedTime"),
-                    }
-                )
-            if prices:
+                existing = latest_by_code.get(code, {})
+                merged = {
+                    "symbol": LIVE_INSTRUMENTS[code],
+                    "scrip_code": code,
+                    "ltp": item.get("ltp", existing.get("ltp")),
+                    "change": item.get("rsChange", existing.get("change")),
+                    "percent_change": item.get("perChange", existing.get("percent_change")),
+                    "last_traded_at": item.get("ltt") or item.get("lastUpdatedTime") or existing.get("last_traded_at"),
+                    "market_depth": _extract_market_depth(item) or existing.get("market_depth") or {},
+                }
+                latest_by_code[code] = merged
+                prices.append(merged)
+            if prices and len(latest_by_code) == len(LIVE_INSTRUMENTS):
                 return sorted(prices, key=lambda item: list(LIVE_INSTRUMENTS).index(item["scrip_code"]))
         raise TimeoutError("No price data was returned by the live feed.")
     except HTTPException:
@@ -212,6 +266,62 @@ def fetch_live_prices(access_token: str) -> list[dict[str, Any]]:
     finally:
         if socket is not None:
             socket.close()
+
+
+def _extract_market_depth(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalize depth data from the websocket payload into a small UI-friendly shape."""
+    candidates = (
+        item.get("marketDepth"),
+        item.get("market_depth"),
+        item.get("depth"),
+        item.get("bidAsk"),
+        item.get("bid_offer"),
+    )
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if isinstance(candidate, dict):
+            bids = candidate.get("buy") or candidate.get("bids") or candidate.get("bid") or []
+            asks = candidate.get("sell") or candidate.get("asks") or candidate.get("offer") or []
+        elif isinstance(candidate, list):
+            bids = candidate[:5]
+            asks = candidate[5:10]
+        else:
+            continue
+
+        return {
+            "best_bid": _extract_level(bids, reverse=True),
+            "best_ask": _extract_level(asks, reverse=False),
+        }
+    return {}
+
+
+def _extract_level(levels: Any, reverse: bool) -> dict[str, Any] | None:
+    if not isinstance(levels, list) or not levels:
+        return None
+
+    preferred = None
+    for level in levels:
+        if not isinstance(level, dict):
+            continue
+        price = level.get("price") or level.get("rate") or level.get("bidPrice") or level.get("offerPrice")
+        qty = level.get("quantity") or level.get("qty") or level.get("bidQuantity") or level.get("offerQuantity")
+        orders = level.get("orders") or level.get("count") or level.get("noOfOrders")
+        if price is None and qty is None and orders is None:
+            continue
+        preferred = {"price": price, "qty": qty, "orders": orders}
+        break
+
+    if preferred:
+        return preferred
+
+    # Some payloads encode depth levels as compact arrays.
+    if isinstance(levels[0], (list, tuple)) and len(levels[0]) >= 2:
+        ordered = sorted(levels, key=lambda x: x[1], reverse=reverse) if all(len(x) >= 2 for x in levels if isinstance(x, (list, tuple))) else levels
+        level = ordered[0]
+        return {"qty": level[0], "price": level[1], "orders": level[2] if len(level) > 2 else None}
+
+    return None
 
 
 @app.get("/api/credentials")
@@ -289,10 +399,137 @@ def live_prices() -> dict[str, Any]:
     access_token = extract_access_token(creds.get("access_token", ""))
     if not access_token:
         raise HTTPException(status_code=400, detail="Missing access_token in Credentials.txt")
+
+    market = market_status()
+    if not market["is_open"]:
+        return {
+            "market": market,
+            "prices": [],
+            "message": "Live prices and market depth are available during NSE trading hours (09:15-15:30 IST, Monday-Friday).",
+        }
+
     return {
-        "market": market_status(),
+        "market": market,
         "prices": fetch_live_prices(access_token),
     }
+
+
+class ExtractPayload(BaseModel):
+    text: str = Field(min_length=1, max_length=50000)
+
+
+@app.get("/api/ai-settings")
+def get_ai_settings():
+    return public_settings(load_settings())
+
+
+def sheets_action(action, *args):
+    try:
+        return action(*args)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not reach Google Sheets. Check the service-account setup and network connection.") from None
+
+
+@app.get("/api/google-sheets/settings")
+def get_sheets_settings():
+    return sheets_action(google_sheets.settings)
+
+
+@app.put("/api/google-sheets/settings")
+def save_sheets_settings(payload: google_sheets.SheetsSettings):
+    return sheets_action(google_sheets.save_settings, payload)
+
+
+@app.post("/api/google-sheets/test")
+def test_sheets_connection():
+    return sheets_action(google_sheets.test_connection)
+
+
+@app.post("/api/google-sheets/append")
+def append_to_sheets(payload: google_sheets.AppendRequest):
+    return sheets_action(google_sheets.append_stocks, payload)
+
+
+@app.post("/api/ai-models")
+def get_ai_models(payload: AISettings):
+    try:
+        return groq_models(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Could not load Groq models. Check your API key and connection, then retry or enter a model ID manually.") from exc
+
+
+@app.put("/api/ai-settings")
+def update_ai_settings(payload: AISettings):
+    try:
+        return save_settings(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/extract")
+def extract_news(payload: ExtractPayload) -> dict[str, Any]:
+    if not payload.text.strip():
+        raise HTTPException(status_code=422, detail="Paste at least one news article.")
+    return apply_selection(payload.text, apply_ai_fallback(payload.text, extract_articles(payload.text)))
+
+
+@app.get("/api/strategies/umbra")
+def umbra_status():
+    return strategies.status()
+
+
+@app.put("/api/strategies/umbra")
+def save_umbra(payload: strategies.UmbraSettings, request: Request):
+    require_local_strategy_control(request)
+    try:
+        return strategies.save_settings(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.get("/api/strategies/umbra/preview")
+def preview_umbra():
+    return sheets_action(strategies.preview)
+
+
+class UmbraToggle(BaseModel):
+    enabled: bool
+
+
+@app.put("/api/strategies/umbra/enabled")
+def toggle_umbra(payload: UmbraToggle, request: Request):
+    require_local_strategy_control(request)
+    try:
+        return strategies.toggle(payload.enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not verify the ShareConnect session. Umbra was not enabled.") from None
+
+
+def require_local_strategy_control(request: Request):
+    # The existing app has no browser authentication; do not expose live trading controls publicly.
+    if not request.client or request.client.host not in {"127.0.0.1", "::1"}:
+        raise HTTPException(status_code=403, detail="Control Umbra from the local app. Remote trading controls require authentication.")
+
+
+class UmbraReview(BaseModel):
+    day: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+@app.post("/api/strategies/umbra/verify-closed")
+def verify_umbra_closed(payload: UmbraReview, request: Request):
+    require_local_strategy_control(request)
+    try:
+        return strategies.verify_closed(payload.day)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not verify positions with ShareConnect. The run remains paused.") from None
 
 
 @app.get("/{full_path:path}")

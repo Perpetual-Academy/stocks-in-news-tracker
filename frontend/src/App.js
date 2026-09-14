@@ -1,7 +1,11 @@
 import React, { useEffect, useState } from "react";
+import Extractor from "./Extractor.jsx";
+import AISetup from "./AISetup.jsx";
+import SheetsSetup from "./SheetsSetup.jsx";
+import Strategies from "./Strategies.jsx";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
-const tabs = ["User", "Live Feed", "Setup"];
+const tabs = ["Login", "User", "Live Feed", "Extractor", "Strategies", "Setup"];
 
 function getErrorMessage(detail, fallback) {
   if (typeof detail === "string") return detail;
@@ -13,7 +17,7 @@ function getErrorMessage(detail, fallback) {
 
 export default function App() {
   const [screen, setScreen] = useState("login");
-  const [tab, setTab] = useState("User");
+  const [tab, setTab] = useState("Login");
   const [form, setForm] = useState({ api_key: "", api_secret: "", request_token: "" });
   const [status, setStatus] = useState("");
   const [isSigningIn, setIsSigningIn] = useState(false);
@@ -31,6 +35,7 @@ export default function App() {
         });
         if (data.has_token) {
           setScreen("dashboard");
+          setTab((current) => current === "Login" ? "User" : current);
           loadProfile();
         }
       })
@@ -55,6 +60,7 @@ export default function App() {
         setStatus(getErrorMessage(data.detail, "Unable to load live prices"));
         return;
       }
+      setStatus("");
       setLiveFeed(data);
     } catch {
       setStatus("Could not reach the live price service.");
@@ -85,6 +91,7 @@ export default function App() {
       }
       setStatus("Access token saved.");
       setScreen("dashboard");
+      setTab("User");
       await loadProfile();
     } catch {
       setStatus("Could not reach the token service. Confirm the FastAPI backend is running on port 8000.");
@@ -93,11 +100,7 @@ export default function App() {
     }
   }
 
-  if (screen === "login") {
-    return React.createElement(
-      "div",
-      { className: "shell center" },
-      React.createElement(
+  const loginPanel = React.createElement(
         "div",
         { className: "card login-card" },
         React.createElement(
@@ -125,9 +128,7 @@ export default function App() {
           )
         ),
         status ? React.createElement("p", { className: "status" }, status) : null
-      )
     );
-  }
 
   return React.createElement(
     "div",
@@ -147,7 +148,7 @@ export default function App() {
         React.createElement("h2", null, "Professional trading workspace"),
         React.createElement("p", { className: "muted" }, "Dark mode, easy to customize, and ready for local development.")
       ),
-      React.createElement("button", { className: "secondary", onClick: () => setScreen("login") }, "Log in again")
+      React.createElement("button", { className: "secondary", onClick: () => setTab("Login") }, screen === "dashboard" ? "Log in again" : "Login")
     ),
     React.createElement(
       "main",
@@ -167,7 +168,18 @@ export default function App() {
           )
         )
       ),
-      tab === "User"
+      tab === "Login"
+        ? loginPanel
+        : screen === "login" && (tab === "User" || tab === "Live Feed")
+          ? React.createElement(
+              "section",
+              { className: "panel" },
+              React.createElement("h3", null, tab),
+              React.createElement("p", { className: "muted" },
+                tab === "User" ? "Log in to view your user profile." : "Log in to view live prices."),
+              React.createElement("button", { className: "primary", onClick: () => setTab("Login") }, "Go to Login")
+            )
+        : tab === "User"
         ? React.createElement(
             "section",
             { className: "panel" },
@@ -214,30 +226,68 @@ export default function App() {
               React.createElement(
                 "div",
                 { className: "quote-grid" },
-                (liveFeed?.prices || ["RELIANCE", "SBIN", "LT"]).map((quote) => {
+                (liveFeed ? liveFeed.prices : ["RELIANCE", "SBIN", "LT"]).map((quote) => {
                   const waiting = typeof quote === "string";
+                  const marketDepth = waiting ? null : quote.market_depth || {};
+                  const bestBid = marketDepth?.best_bid;
+                  const bestAsk = marketDepth?.best_ask;
                   return React.createElement(
                     "article",
                     { className: "quote-card", key: waiting ? quote : quote.symbol },
                     React.createElement("div", { className: "quote-symbol" }, waiting ? quote : quote.symbol),
                     React.createElement("div", { className: "quote-price" }, waiting ? "Loading..." : `Rs. ${Number(quote.ltp).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`),
+                    !waiting
+                      ? React.createElement(
+                          "div",
+                          { className: "quote-depth" },
+                          React.createElement(
+                            "span",
+                            null,
+                            `Bid: ${bestBid?.price != null ? `Rs. ${Number(bestBid.price).toLocaleString("en-IN", { minimumFractionDigits: 2 })}` : "N/A"}`
+                          ),
+                          React.createElement(
+                            "span",
+                            null,
+                            `Ask: ${bestAsk?.price != null ? `Rs. ${Number(bestAsk.price).toLocaleString("en-IN", { minimumFractionDigits: 2 })}` : "N/A"}`
+                          )
+                        )
+                      : null,
                     waiting
                       ? React.createElement("div", { className: "muted" }, "Connecting to live feed")
                       : React.createElement(
                           "div",
                           { className: Number(quote.percent_change) >= 0 ? "quote-change positive" : "quote-change negative" },
-                          `${Number(quote.percent_change).toFixed(2)}% (${Number(quote.change).toFixed(2)})`
-                        ),
+                            `${Number(quote.percent_change).toFixed(2)}% (${Number(quote.change).toFixed(2)})`
+                          ),
+                    !waiting && (bestBid || bestAsk)
+                      ? React.createElement(
+                          "div",
+                          { className: "quote-depth-meta muted" },
+                          `Depth ${bestBid?.qty != null ? `Bid Qty: ${bestBid.qty}` : "Bid Qty: N/A"} · ${
+                            bestAsk?.qty != null ? `Ask Qty: ${bestAsk.qty}` : "Ask Qty: N/A"
+                          }`
+                        )
+                      : null,
                     !waiting ? React.createElement("div", { className: "quote-time" }, `Last trade: ${quote.last_traded_at}`) : null
                   );
                 })
               ),
+              liveFeed?.message
+                ? React.createElement("p", { className: "feed-notice" }, liveFeed.message)
+                : null,
+              status ? React.createElement("p", { className: "feed-notice error" }, status) : null,
               React.createElement("button", { className: "secondary", onClick: loadLiveFeed }, "Refresh now")
             )
-          : React.createElement(
+          : tab === "Extractor"
+            ? React.createElement(Extractor, { apiBase: API_BASE })
+          : tab === "Strategies"
+            ? React.createElement(Strategies, { apiBase: API_BASE })
+            : React.createElement(
             "section",
             { className: "panel" },
             React.createElement("h3", null, "Setup"),
+            React.createElement(AISetup, { apiBase: API_BASE }),
+            React.createElement(SheetsSetup, { apiBase: API_BASE }),
             React.createElement(
               "ul",
               { className: "setup-list" },

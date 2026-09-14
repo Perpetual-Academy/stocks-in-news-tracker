@@ -5,3 +5,11 @@ frontend/dist
 backend/__pycache__
 *.pyc
 Credentials.txt
+AISettings.json
+.ai-settings-*.tmp
+.env
+GoogleSheetsSettings.json
+.google-sheets-*.tmp
+sheets-appends.sqlite3*
+strategies.sqlite3*
+*service-account*.json

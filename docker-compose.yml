@@ -18,6 +18,8 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       CREDENTIALS_PATH: /data/Credentials.txt
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
     volumes:
       - tracker-data:/data
     restart: unless-stopped

@@ -4,3 +4,4 @@ pydantic==2.8.2
 shareconnect==1.0.0.11
 pycryptodome>=3.20.0
 websocket-client>=1.8.0
+google-auth[requests]>=2.38.0,<3

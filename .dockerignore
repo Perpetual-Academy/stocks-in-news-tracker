@@ -1,0 +1,13 @@
+.git
+.venv
+**/node_modules
+frontend/dist
+**/__pycache__
+*.pyc
+Credentials.txt
+AISettings.json
+GoogleSheetsSettings.json
+.env
+.env.*
+*.sqlite3*
+*service-account*.json
