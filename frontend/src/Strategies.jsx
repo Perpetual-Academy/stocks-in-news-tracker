@@ -49,14 +49,14 @@ export default function Strategies({ apiBase }) {
     run(async () => {
       setState(await request("", { method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...config, order_value: config.order_value || null }) }));
-      setMessage("Umbra settings saved. Trading remains off.");
+      setMessage("Umbra settings saved. Turn Umbra on to arm the new entry time.");
       setDirty(false);
     });
   }
 
   const change = (key) => event => { setDirty(true); setConfig({ ...config, [key]: event.target.value }); };
-  const runActionVerify = day => run(async () => setState(await request("/verify-closed", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ day })
+  const runActionVerify = (day, run_id) => run(async () => setState(await request("/verify-closed", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ day, run_id })
   })));
   const locked = busy || !state || state.enabled || state.runs?.some(run => !["complete", "skipped"].includes(run.state));
   return <section className="panel strategies">
@@ -87,7 +87,7 @@ export default function Strategies({ apiBase }) {
       <p><span className="positive">Positive influence</span> → Sell BT at market</p>
       <p><span className="negative">Negative influence</span> → Buy BT at market</p>
       <p className="muted">No stop-loss or automatic exit. Use the amount above for each stock. Quantity is rounded down using a fresh price; the final market value may differ.</p>
-      <p className="muted">Places entries each weekday while enabled. Manage exits and pending orders directly in ShareConnect. Turning off stops new entries. Keep the backend and computer running for scheduled entries.</p>
+      <p className="muted">To reschedule today: turn Umbra off, enter a different future entry time, save settings, then turn Umbra on. Each entry time can run once per day. Existing orders or positions in a stock prevent duplicate entries. Places entries each weekday while enabled. Manage exits and pending orders directly in ShareConnect. Turning off stops new entries. Keep the backend and computer running for scheduled entries.</p>
     </div>
     <p id="umbra-blocker" className="feed-notice">{state?.blockers?.join(" ") || (dirty ? "Save your changes before enabling Umbra." : state?.message || "Ready. Turn Umbra on to schedule live BT entries through ShareConnect. No automatic exits.")}</p>
     {error && <p className="feed-notice error" role="alert">{error}</p>}
@@ -101,10 +101,10 @@ export default function Strategies({ apiBase }) {
         <ul>{preview.skipped.map((stock, i) => <li key={i}>{stock.symbol || `Row ${stock.row}`}: {stock.reason}</li>)}</ul></details>}
     </div>}
     {state?.runs?.length > 0 && <div className="strategy-preview"><h4>Recent runs</h4>
-      {state.runs.slice().reverse().map(run => <div key={run.day} className="strategy-rules">
-        <strong>{run.day} · {run.state}</strong>{run.message && <p>{run.message}</p>}
+      {state.runs.slice().reverse().map(run => <div key={run.id || run.day} className="strategy-rules">
+        <strong>{run.day} · {run.settings?.entry_time} IST · {run.state}</strong>{run.message && <p>{run.message}</p>}
         {run.state === "attention" && <button type="button" className="secondary" disabled={busy}
-          onClick={() => runActionVerify(run.day)}>Verify positions closed</button>}
+          onClick={() => runActionVerify(run.day, run.id || run.day)}>Verify positions closed</button>}
         <ul>{run.orders.map(order => <li key={order.symbol}>{order.symbol} · {order.side} · {order.quantity || 0} shares · {order.state}
           {order.entry && ` · Entry ${order.entry.order_id}`}{order.exit && ` · Exit ${order.exit.order_id}`}
           {order.message && ` · ${order.message}`}</li>)}</ul>

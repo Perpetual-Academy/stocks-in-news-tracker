@@ -162,7 +162,7 @@ def all_runs():
 
 def store_run(run):
     with database() as db:
-        db.execute("INSERT OR REPLACE INTO runs VALUES (?, ?)", (run["day"], json.dumps(run)))
+        db.execute("INSERT OR REPLACE INTO runs VALUES (?, ?)", (run.get("id", run["day"]), json.dumps(run)))
 
 
 def toggle(enabled):
@@ -173,6 +173,15 @@ def toggle(enabled):
                 raise ValueError(" ".join(current["blockers"]))
             if load_control()["enabled"]:
                 return current
+            now = datetime.now(IST)
+            settings = load_settings()
+            today_runs = [r for r in all_runs() if r["day"] == now.date().isoformat()]
+            entry_at = datetime.fromisoformat(f"{now.date().isoformat()}T{settings.entry_time}:00+05:30")
+            if today_runs:
+                if any(r.get("entry_at") == entry_at.isoformat() for r in today_runs):
+                    raise ValueError("This entry time already ran today. Save a different future entry time before enabling Umbra.")
+                if entry_at <= now:
+                    raise ValueError("Choose a future entry time in IST to reschedule today.")
             broker = ShareConnectBT()
             broker.reports()  # Read-only check of account and session before arming.
             store_control({"enabled": True, "since": datetime.now(IST).isoformat(),
@@ -189,10 +198,11 @@ def matching(reports, symbol):
     return [r for r in reports if r.get("tradingSymbol") == symbol and r.get("exchange") == "NC"]
 
 
-def verify_closed(day):
+def verify_closed(day, run_id=None):
     """User-initiated, read-only broker reconciliation. Never submit an order."""
     with LOCK:
-        runs = [r for r in all_runs() if r["day"] == day]
+        runs = [r for r in all_runs() if r["day"] == day and
+                (run_id is None or r.get("id", r["day"]) == run_id)]
         if len(runs) != 1 or runs[0]["state"] != "attention":
             raise ValueError("Choose a run that requires attention.")
         run = runs[0]
@@ -224,6 +234,11 @@ def enter(run, broker, now):
     selection = preview()
     if selection["date"] != run["day"]:
         raise ValueError("Tracker date changed during entry preparation.")
+    run["selection"] = selection
+    if not selection["candidates"]:
+        run.update(state="complete", message="No qualifying stocks at entry time. Turn Umbra off, choose a new future entry time, save, and turn it on to try again.")
+        store_run(run)
+        return
     symbols = [r["symbol"] for r in selection["candidates"]]
     instruments = broker.instruments(symbols) if symbols else {}
     run["orders"] = []
@@ -313,7 +328,7 @@ def tick(now=None, broker_factory=ShareConnectBT):
     now = now or datetime.now(IST)
     runs = all_runs()
     for run in runs:
-        if run["state"] in {"complete", "skipped"}:
+        if run["state"] in {"complete", "skipped", "attention"}:
             continue
         if run["day"] != now.date().isoformat() or now.strftime("%H:%M") >= "15:30":
             run.update(state="attention", message="Session ended with unresolved orders. Check ShareConnect; no next-day exit will be sent.")
@@ -338,12 +353,12 @@ def tick(now=None, broker_factory=ShareConnectBT):
         return
     settings = load_settings()
     day = now.date().isoformat()
-    if any(r["day"] == day for r in runs):
-        return
     entry_at = datetime.fromisoformat(f"{day}T{settings.entry_time}:00+05:30")
+    if any(r["day"] == day and r.get("entry_at") == entry_at.isoformat() for r in runs):
+        return
     if now < entry_at or datetime.fromisoformat(control["since"]) > entry_at:
         return
-    run = {"day": day, "state": "preparing", "orders": [], "settings": settings.model_dump(mode="json"), "armed_since": control["since"],
+    run = {"id": f"{day}|{settings.entry_time}", "day": day, "state": "preparing", "orders": [], "settings": settings.model_dump(mode="json"), "armed_since": control["since"],
            "entry_at": entry_at.isoformat(), "customer_id": ""}
     if (now - entry_at).total_seconds() >= 60:
         run.update(state="skipped", message="Entry time was missed. No late entry orders were sent.")

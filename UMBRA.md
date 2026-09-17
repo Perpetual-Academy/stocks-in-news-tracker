@@ -8,7 +8,7 @@ Log in again if the saved broker session lacks customerId and loginId. Save the 
 
 Manage exits, stop-losses and pending orders directly in ShareConnect. Turning Umbra off stops new entries. Entry reconciliation is read-only: it records fills but never cancels an unfilled remainder or places an exit order. A run marked complete means its entry checks completed, not that its positions were closed. Broker-side intraday square-off rules still apply independently.
 
-The SQLite ledger and single-worker OS lock prevent duplicate daily runs and blind retries after interrupted submissions. Unknown outcomes and inconsistent reports require review. After handling positions and orders in ShareConnect, Verify positions closed performs read-only checks to clear an attention state. Existing orders/BT positions in a stock cause new Umbra entries for that stock to be skipped.
+The SQLite ledger and single-worker OS lock prevent duplicate runs for each date and entry time and blind retries after interrupted submissions. Unknown outcomes and inconsistent reports require review. After handling positions and orders in ShareConnect, Verify positions closed performs read-only checks to clear an attention state. Existing orders/BT positions in a stock cause new Umbra entries for that stock to be skipped.
 
 Strategy settings, toggles and review controls are available remotely, including on the VPS. These endpoints have no dashboard authentication, as requested by the owner. Run a single backend worker. No live strategy was enabled or live order placed during development.
 
@@ -22,3 +22,5 @@ Build the frontend with npm run build in frontend. Tests use a simulated broker 
 
 Official API specification inspected:
 https://www.sharekhan.com/trading-api/documentation
+
+To reschedule on the same day, turn Umbra off, save a different future entry time in IST, then turn Umbra on. Each date/time runs once; prior receipts remain in history. Unresolved runs block settings changes, and existing broker orders or positions still prevent duplicate entries for a stock. Preparation failures remain visible as attention until explicitly reviewed.

@@ -521,13 +521,14 @@ def toggle_umbra(payload: UmbraToggle):
 
 
 class UmbraReview(BaseModel):
+    run_id: str | None = None
     day: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
 
 
 @app.post("/api/strategies/umbra/verify-closed")
 def verify_umbra_closed(payload: UmbraReview):
     try:
-        return strategies.verify_closed(payload.day)
+        return strategies.verify_closed(payload.day, payload.run_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     except Exception:

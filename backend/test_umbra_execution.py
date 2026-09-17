@@ -208,5 +208,60 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(len(self.broker.calls), 1)
 
 
+    def reschedule(self, time):
+        with patch.object(s, "ShareConnectBT", return_value=self.broker), patch.object(s, "WORKER_ACTIVE", True):
+            s.toggle(False)
+            s.save_settings(s.UmbraSettings(order_value="1000", entry_time=time))
+            s.toggle(True)
+
+    def test_empty_run_can_be_rescheduled_without_overwriting_history(self):
+        with patch.object(s, "preview", return_value={"date": "2026-09-14", "candidates": []}):
+            self.tick()
+        self.reschedule("09:40")
+        self.tick(9, 39)
+        self.assertEqual(self.broker.calls, [])
+        self.tick(9, 40); self.tick(9, 40)
+        self.assertEqual(len(self.broker.calls), 1)
+        runs = s.all_runs()
+        self.assertEqual(len(runs), 2)
+        self.assertIn("No qualifying stocks", runs[0]["message"])
+        self.assertEqual(runs[0]["orders"], [])
+        self.assertEqual(runs[1]["settings"]["entry_time"], "09:40")
+
+    def test_reschedule_keeps_existing_position_duplicate_guard(self):
+        self.tick(); self.tick()
+        self.reschedule("09:40")
+        self.tick(9, 40)
+        self.assertEqual(len(self.broker.calls), 1)
+        self.assertEqual(s.all_runs()[1]["orders"][0]["state"], "skipped")
+
+    def test_same_time_cannot_be_rearmed(self):
+        with patch.object(s, "preview", return_value={"date": "2026-09-14", "candidates": []}):
+            self.tick()
+        with self.assertRaisesRegex(ValueError, "already ran"):
+            self.reschedule("09:30")
+        self.assertFalse(s.load_control()["enabled"])
+
+    def test_preparation_failure_remains_visible_and_blocks_reschedule(self):
+        with patch.object(s, "preview", side_effect=ValueError("Sheet unavailable")):
+            self.tick()
+        self.tick()
+        self.assertEqual(s.all_runs()[0]["state"], "attention")
+        self.assertIn("Entry preparation failed", s.all_runs()[0]["message"])
+        with self.assertRaises(ValueError):
+            self.reschedule("09:40")
+        self.assertEqual(self.broker.calls, [])
+
+    def test_legacy_daily_record_still_deduplicates_old_time(self):
+        run = {"day": "2026-09-14", "state": "complete", "orders": [],
+               "settings": self.settings.model_dump(mode="json"), "entry_at": "2026-09-14T09:30:00+05:30"}
+        s.store_run(run)
+        self.tick()
+        self.assertEqual(self.broker.calls, [])
+        self.reschedule("09:40"); self.tick(9, 40)
+        self.assertEqual(len(s.all_runs()), 2)
+        self.assertEqual(len(self.broker.calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
