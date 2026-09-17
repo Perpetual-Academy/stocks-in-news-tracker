@@ -495,6 +495,17 @@ def preview_umbra():
     return sheets_action(strategies.preview)
 
 
+@app.post("/api/strategies/umbra/manual-preview")
+def manual_umbra_preview(payload: strategies.UmbraSettings):
+    if not payload.order_value or not payload.entry_time:
+        raise HTTPException(status_code=422, detail="Enter an order value and review time.")
+    selection = sheets_action(strategies.preview)
+    return {**selection, "order_value": str(payload.order_value),
+            "review_time": payload.entry_time,
+            "checked_at": datetime.now(strategies.IST).isoformat(),
+            "manual_only": True}
+
+
 class UmbraToggle(BaseModel):
     enabled: bool
 

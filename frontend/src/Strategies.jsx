@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import ManualUmbraPreview from "./ManualUmbraPreview.jsx";
 
 const defaults = { order_value: "", value_basis: "per_stock", entry_time: "" };
 
@@ -80,6 +81,7 @@ export default function Strategies({ apiBase }) {
         <button className="secondary" type="button" disabled={busy || !state}
           onClick={() => run(async () => setPreview(await request("/preview")))}>Check today's stocks</button></div>
     </form>
+    <ManualUmbraPreview request={request} run={run} busy={busy} />
     <div className="strategy-rules"><h4>Umbra rules</h4>
       <p>Today's date · BigTrade: Yes · BT+: Yes</p>
       <p><span className="positive">Positive influence</span> → Sell BT at market</p>
