@@ -2,7 +2,7 @@
 import json
 import time
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -96,13 +96,25 @@ class ShareConnectBT:
             socket.send(json.dumps({"action": "feed", "key": ["ltp"], "value": [f"NC{code}"]}))
             deadline = time.monotonic() + 8
             while time.monotonic() < deadline:
-                message = json.loads(socket.recv())
-                for item in message.get("data", []):
+                try:
+                    message = json.loads(socket.recv())
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                # Subscription acknowledgements contain text, not quote records.
+                if not isinstance(message, dict) or not isinstance(message.get("data"), list):
+                    continue
+                for item in message["data"]:
+                    if not isinstance(item, dict):
+                        continue
                     if item.get("exchangeCode") != "NC" or str(item.get("scripCode")) != str(code):
                         continue
-                    stamp = datetime.strptime(item["lastUpdatedTime"], "%d/%m/%Y %H:%M:%S").replace(tzinfo=IST)
+                    try:
+                        # ShareConnect timestamps are month/day/year in IST.
+                        stamp = datetime.strptime(item["lastUpdatedTime"], "%m/%d/%Y %H:%M:%S").replace(tzinfo=IST)
+                        price = Decimal(str(item["ltp"]))
+                    except (KeyError, TypeError, ValueError, InvalidOperation):
+                        continue
                     age = (datetime.now(IST) - stamp).total_seconds()
-                    price = Decimal(str(item["ltp"]))
                     if 0 <= age <= 30 and price.is_finite() and price > 0:
                         return price
             raise ValueError("No fresh market quote. Entry skipped.")
