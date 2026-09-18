@@ -39,12 +39,18 @@ def order_state(row):
     return filled, terminal
 
 
-def market_payload(customer_id, login_id, symbol, code, side, quantity):
+def limit_payload(customer_id, login_id, symbol, code, side, quantity, limit_price):
+    try:
+        price = Decimal(str(limit_price))
+    except InvalidOperation as exc:
+        raise ValueError("A valid positive limit price is required.") from exc
+    if not price.is_finite() or price <= 0:
+        raise ValueError("A valid positive limit price is required.")
     if side not in {"BUY", "SELL"} or quantity <= 0:
         raise ValueError("Invalid order direction or quantity.")
     return {"customerId": customer_id, "scripCode": integer(code), "tradingSymbol": symbol,
             "exchange": "NC", "transactionType": "B" if side == "BUY" else "S",
-            "quantity": integer(quantity), "disclosedQty": 0, "price": "0", "triggerPrice": "0",
+            "quantity": integer(quantity), "disclosedQty": 0, "price": format(price, "f"), "triggerPrice": "0",
             "rmsCode": "ANY", "afterHour": "N", "orderType": "NORMAL", "channelUser": login_id,
             "validity": "GFD", "requestType": "NEW", "productType": "BIGTRADE"}
 
@@ -124,11 +130,11 @@ class ShareConnectBT:
         finally:
             socket.close()
 
-    def place(self, symbol, code, side, quantity):
-        return receipt(self.client.placeOrder(market_payload(self.customer_id, self.login_id, symbol, code, side, quantity)))
+    def place(self, symbol, code, side, quantity, limit_price):
+        return receipt(self.client.placeOrder(limit_payload(self.customer_id, self.login_id, symbol, code, side, quantity, limit_price)))
 
     def cancel(self, order, row):
-        payload = market_payload(self.customer_id, self.login_id, order["symbol"], order["code"], order["side"], integer(row["orderQty"]))
+        payload = limit_payload(self.customer_id, self.login_id, order["symbol"], order["code"], order["side"], integer(row["orderQty"]), order["limit_price"])
         payload.update(orderId=order["entry"]["order_id"], rmsCode=row["rmsCode"], requestType="CANCEL")
         self.client.cancelOrder(payload)
         # The engine waits for a terminal order-book status, not this acknowledgement.

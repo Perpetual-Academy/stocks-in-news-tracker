@@ -84,9 +84,9 @@ export default function Strategies({ apiBase }) {
     <ManualUmbraPreview request={request} run={run} busy={busy} />
     <div className="strategy-rules"><h4>Umbra rules</h4>
       <p>Today's date · BigTrade: Yes · BT+: Yes</p>
-      <p><span className="positive">Positive influence</span> → Sell BT at market</p>
-      <p><span className="negative">Negative influence</span> → Buy BT at market</p>
-      <p className="muted">No stop-loss or automatic exit. Use the amount above for each stock. Quantity is rounded down using a fresh price; the final market value may differ.</p>
+      <p><span className="positive">Positive influence</span> → Sell BT with a limit order</p>
+      <p><span className="negative">Negative influence</span> → Buy BT with a limit order</p>
+      <p className="muted">No stop-loss or automatic exit. Use the amount above for each stock. Quantity is rounded down using a fresh price; the fresh last-traded price is used as the limit. Orders may remain unfilled; there is no market-order fallback.</p>
       <p className="muted">To reschedule today: turn Umbra off, enter a different future entry time, save settings, then turn Umbra on. Each entry time can run once per day. Existing orders or positions in a stock prevent duplicate entries. Places entries each weekday while enabled. Manage exits and pending orders directly in ShareConnect. Turning off stops new entries. Keep the backend and computer running for scheduled entries.</p>
     </div>
     <p id="umbra-blocker" className="feed-notice">{state?.blockers?.join(" ") || (dirty ? "Save your changes before enabling Umbra." : state?.message || "Ready. Turn Umbra on to schedule live BT entries through ShareConnect. No automatic exits.")}</p>
@@ -95,7 +95,7 @@ export default function Strategies({ apiBase }) {
     {preview && <div className="strategy-preview"><h4>Qualifying stocks · {preview.date}</h4>
       {preview.candidates.length ? <div className="strategy-table-wrap"><table className="strategy-table">
         <thead><tr><th>Symbol</th><th>Influence</th><th>Entry order</th></tr></thead>
-        <tbody>{preview.candidates.map(stock => <tr key={stock.symbol}><td>{stock.symbol}</td><td>{stock.influence}</td><td>{stock.side} BT · Market</td></tr>)}</tbody>
+        <tbody>{preview.candidates.map(stock => <tr key={stock.symbol}><td>{stock.symbol}</td><td>{stock.influence}</td><td>{stock.side} BT · Limit</td></tr>)}</tbody>
       </table></div> : <p className="muted">No stocks meet Umbra's rules for today.</p>}
       {preview.skipped.length > 0 && <details><summary>{preview.skipped.length} excluded stocks / rows</summary>
         <ul>{preview.skipped.map((stock, i) => <li key={i}>{stock.symbol || `Row ${stock.row}`}: {stock.reason}</li>)}</ul></details>}

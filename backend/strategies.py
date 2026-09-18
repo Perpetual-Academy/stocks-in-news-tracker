@@ -130,7 +130,7 @@ def select_candidates(values, today):
             influence = next(iter(influences))
             candidates.append({"symbol": symbol, "name": str(entries[0][1][1]),
                                "influence": influence, "side": "SELL" if influence == "positive" else "BUY",
-                               "product": "BT", "order_type": "Market", "rows": [n for n, _ in entries]})
+                               "product": "BT", "order_type": "Limit", "rows": [n for n, _ in entries]})
     return {"date": today.isoformat(), "timezone": "Asia/Kolkata", "candidates": candidates, "skipped": skipped}
 
 
@@ -270,9 +270,9 @@ def enter(run, broker, now):
                 if not control["enabled"] or control.get("since") != run["armed_since"]:
                     order.update(state="skipped", message="Umbra was turned off before entry.")
                     continue
-                order.update(quantity=qty, reference_price=str(price), state="entry_sending")
+                order.update(quantity=qty, reference_price=str(price), limit_price=str(price), order_type="Limit", state="entry_sending")
                 store_run(run)  # Durable before the irreversible broker request.
-                order["entry"] = broker.place(symbol, order["code"], order["side"], qty)
+                order["entry"] = broker.place(symbol, order["code"], order["side"], qty, price)
                 order["state"] = "open"
         except Exception:
             if order["state"] == "entry_sending":

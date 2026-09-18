@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend import strategies as s
-from backend.umbra_broker import market_payload, receipt
+from backend.umbra_broker import limit_payload, receipt
 
 
 class Clock(datetime):
@@ -25,6 +25,7 @@ class Broker:
     def __init__(self):
         self.book = []
         self.calls = []
+        self.limit_prices = []
         self.net = 0
         self.uncertain = False
         self.partial = False
@@ -42,7 +43,8 @@ class Broker:
     def net_position(self, symbol):
         return self.net
 
-    def place(self, symbol, code, side, quantity):
+    def place(self, symbol, code, side, quantity, limit_price):
+        self.limit_prices.append(limit_price)
         self.calls.append((symbol, code, side, quantity))
         if self.uncertain:
             raise TimeoutError("Simulated response loss after submission")
@@ -86,7 +88,10 @@ class ExecutionTests(unittest.TestCase):
     def test_entries_only_even_at_old_exit_time_and_after_restart(self):
         self.tick(); self.tick()
         self.assertEqual(self.broker.calls, [("AAA", 123, "SELL", 9)])
+        self.assertEqual(self.broker.limit_prices, [Decimal("101")])
         run = s.all_runs()[0]
+        self.assertEqual(run["orders"][0]["limit_price"], "101")
+        self.assertEqual(run["orders"][0]["order_type"], "Limit")
         self.assertNotIn("exit_at", run)
         self.assertEqual(run["orders"][0]["filled_quantity"], 9)
         self.assertEqual(run["orders"][0]["state"], "filled")
@@ -150,12 +155,12 @@ class ExecutionTests(unittest.TestCase):
 
 
 
-    def test_market_bt_payload_has_no_stop(self):
+    def test_limit_bt_payload_has_no_stop(self):
         for side, expected in [("BUY", "B"), ("SELL", "S")]:
-            payload = market_payload("account", "login", "AAA", 123, side, 9)
+            payload = limit_payload("account", "login", "AAA", 123, side, 9, Decimal("101.05"))
             self.assertEqual(payload["productType"], "BIGTRADE")
             self.assertEqual(payload["transactionType"], expected)
-            self.assertEqual(payload["price"], "0")
+            self.assertEqual(payload["price"], "101.05")
             self.assertEqual(payload["triggerPrice"], "0")
             self.assertEqual(payload["requestType"], "NEW")
         with self.assertRaises(ValueError):
