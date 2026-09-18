@@ -7,12 +7,15 @@ from decimal import Decimal, InvalidOperation
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
-def data_of(response, expected):
+def data_of(response, expected, *, allow_no_records=False):
     if isinstance(response, str):
         response = json.loads(response)
     if not isinstance(response, dict) or str(response.get("status")) != "200":
         raise ValueError("ShareConnect rejected the request. Check the session and broker account.")
     data = response.get("data")
+    # Order/trade history uses this sentinel for a successful empty book.
+    if allow_no_records and expected is list and data == "no_records":
+        return []
     if not isinstance(data, expected):
         raise ValueError("ShareConnect returned an unrecognized response; no further orders sent.")
     return data
@@ -68,13 +71,13 @@ class ShareConnectBT:
         self.token = token
 
     def reports(self):
-        rows = data_of(self.client.reports(self.customer_id), list)
+        rows = data_of(self.client.reports(self.customer_id), list, allow_no_records=True)
         if any(not isinstance(r, dict) or not r.get("orderId") or not r.get("tradingSymbol") for r in rows):
             raise ValueError("Incomplete broker order book; trading paused.")
         return rows
 
     def positions(self):
-        return data_of(self.client.trades(self.customer_id), list)
+        return data_of(self.client.trades(self.customer_id), list, allow_no_records=True)
 
     def instruments(self, symbols):
         rows = data_of(self.client.master("NC"), list)
