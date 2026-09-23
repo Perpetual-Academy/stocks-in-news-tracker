@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 from pydantic import BaseModel, Field, model_validator
 from backend import google_sheets
-from backend.umbra_broker import ShareConnectBT, order_state, integer, bracket_prices
+from backend.umbra_broker import ShareConnectBT, order_state, integer, bracket_prices, OrderSubmissionError
 
 IST = timezone(timedelta(hours=5, minutes=30))
 DB_PATH = google_sheets.DATA_DIR / "strategies.sqlite3"
@@ -280,9 +280,16 @@ def enter(run, broker, now):
                 order["entry"] = broker.place(symbol, order["code"], order["side"], qty, price,
                                              stop_price=stop, target_price=target)
                 order["state"] = "open"
-        except Exception:
+        except Exception as exc:
             if order["state"] == "entry_sending":
+                if isinstance(exc, OrderSubmissionError):
+                    order["broker_diagnostic"] = exc.diagnostic
+                    if exc.rejected:
+                        order.update(state="rejected", message="ShareConnect rejected entry: " + str(exc) + " This order will not be retried.")
+                        continue
                 order.update(state="attention", message="Entry outcome uncertain. Check ShareConnect; this order will not be retried.")
+                if isinstance(exc, OrderSubmissionError):
+                    order["message"] += " Broker detail: " + str(exc)
                 run["state"] = "attention"
                 break
             order.update(state="skipped", message="Could not verify instrument, account or fresh price. No entry submitted.")
@@ -296,7 +303,7 @@ def enter(run, broker, now):
 def monitor_entries(run, broker):
     """Read-only reconciliation. Never cancel or place exit orders."""
     for order in run["orders"]:
-        if order["state"] in {"filled", "closed", "skipped", "attention"}:
+        if order["state"] in {"filled", "closed", "skipped", "attention", "rejected"}:
             continue
         try:
             if order.get("exit") or order["state"] in {"exit_pending", "cancel_pending"}:

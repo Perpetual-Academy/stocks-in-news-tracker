@@ -1,5 +1,6 @@
 """ShareConnect BT adapter. No broker writes occur on import or construction."""
 import json
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR, ROUND_CEILING
@@ -81,12 +82,57 @@ def limit_payload(customer_id, login_id, symbol, code, side, quantity, limit_pri
             "childSlPrice": format(stop, "f"), "bookProfitPrice": format(target, "f")}
 
 
-def receipt(response):
-    data = data_of(response, dict)
+class OrderSubmissionError(ValueError):
+    def __init__(self, diagnostic, *, rejected=False):
+        self.diagnostic = diagnostic
+        self.rejected = rejected
+        super().__init__(diagnostic["message"])
+
+
+def safe_broker_text(value, secrets=()):
+    """Never persist raw responses, request echoes, URLs, or credential values."""
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        return ""
+    text = str(value)
+    for secret in sorted({str(v) for v in secrets if v}, key=len, reverse=True):
+        text = text.replace(secret, "[redacted]")
+    text = re.sub(r"https?://\S+", "[redacted URL]", text, flags=re.I)
+    text = re.sub(r"(?i)(bearer\s+)\S+", r"\1[redacted]", text)
+    text = re.sub(r"(?i)((?:access[_-]?token|api[_-]?key|vendor[_-]?key|secret|password|authorization|customerId|channelUser)\s*[\"']?\s*[:=]\s*)[^,;\s}]+", r"\1[redacted]", text)
+    return " ".join(text.split())[:500]
+
+
+def receipt(response, *, secrets=()):
+    if isinstance(response, str):
+        try:
+            response = json.loads(response)
+        except (ValueError, TypeError):
+            response = None
+    if not isinstance(response, dict):
+        raise OrderSubmissionError({"stage": "response", "message": "ShareConnect returned an unreadable response."})
+    raw_data = response.get("data")
+    data = raw_data if isinstance(raw_data, dict) else {}
+    diagnostic = {"stage": "response", "status": safe_broker_text(response.get("status"), secrets)}
+    for key in ("errorCode", "code", "errormsg", "errorMsg", "message", "orderStatus"):
+        value = data.get(key) or response.get(key)
+        if value:
+            diagnostic[key] = safe_broker_text(value, secrets)
     order_id = data.get("orderId")
     rms = data.get("rmscode") or data.get("rmsCode")
-    if data.get("errormsg") or data.get("errorMsg") or not order_id or not rms:
-        raise ValueError("Broker did not confirm an order receipt. Check the order book before taking action.")
+    # Only an explicit rejection without any order ID is definitive. HTTP errors,
+    # timeouts and unfamiliar response shapes must never authorize a retry.
+    rejected = isinstance(raw_data, dict) and str(data.get("orderStatus") or response.get("orderStatus") or "").lower() == "rejected"
+    has_id = any(v for obj in (response, data) for k, v in obj.items() if "order" in k.lower() and "id" in k.lower())
+    if (str(response.get("status")) != "200" or rejected or
+            diagnostic.get("errormsg") or diagnostic.get("errorMsg") or not order_id or not rms):
+        reason = diagnostic.get("errormsg") or diagnostic.get("errorMsg") or diagnostic.get("message")
+        diagnostic["message"] = reason or "Broker did not return a complete order receipt."
+        code = diagnostic.get("errorCode") or diagnostic.get("code")
+        if code:
+            diagnostic["message"] += " (code: " + code + ")"
+        diagnostic["receipt_has_order_id"] = bool(has_id)
+        diagnostic["receipt_has_rms_code"] = bool(rms)
+        raise OrderSubmissionError(diagnostic, rejected=rejected and not has_id)
     return {"order_id": str(order_id), "rms_code": str(rms)}
 
 
@@ -101,6 +147,7 @@ class ShareConnectBT:
             raise ValueError("Log in again to save your ShareConnect customer ID, login ID and access token.")
         self.client = build_shareconnect_client(creds["api_key"], token, creds.get("vendor_key") or None)
         self.token = token
+        self._diagnostic_secrets = [v for v in creds.values() if isinstance(v, str)] + [token]
 
     def reports(self):
         rows = data_of(self.client.reports(self.customer_id), list, allow_no_records=True)
@@ -158,8 +205,16 @@ class ShareConnectBT:
             socket.close()
 
     def place(self, symbol, code, side, quantity, limit_price, *, stop_price, target_price):
-        return receipt(self.client.placeOrder(limit_payload(self.customer_id, self.login_id, symbol, code, side, quantity, limit_price,
-                                                           stop_price=stop_price, target_price=target_price)))
+        payload = limit_payload(self.customer_id, self.login_id, symbol, code, side, quantity, limit_price,
+                                stop_price=stop_price, target_price=target_price)
+        try:
+            response = self.client.placeOrder(payload)
+        except Exception as exc:
+            # Exception strings can contain authenticated URLs or request bodies.
+            category = "timeout" if "timeout" in type(exc).__name__.lower() else "transport_or_sdk_error"
+            raise OrderSubmissionError({"stage": "submission", "code": category,
+                                        "message": "No usable ShareConnect response was received (" + category + ")."}) from None
+        return receipt(response, secrets=getattr(self, "_diagnostic_secrets", [self.customer_id, self.login_id]))
 
     def cancel(self, order, row):
         raise ValueError("Manage BT+ bracket cancellations in ShareConnect; automatic cancellation is disabled.")
