@@ -34,10 +34,10 @@ export default function ManualUmbraPreview({ request, run, busy }) {
       {preview.candidates.length ? <div className="strategy-table-wrap"><table className="strategy-table">
         <thead><tr><th>Stock</th><th>Side</th><th>Product / order</th><th>Value per stock</th></tr></thead>
         <tbody>{preview.candidates.map(stock => <tr key={stock.symbol}>
-          <td>{stock.symbol}</td><td>{stock.side}</td><td>BT · Limit</td><td>INR {preview.order_value}</td>
+          <td>{stock.symbol}</td><td>{stock.side}</td><td>BT+ · Limit</td><td>INR {preview.order_value}</td>
         </tr>)}</tbody>
       </table></div> : <p>No stocks meet the rules for this date.</p>}
-      <p>Confirm current price, whole-share quantity, existing positions and order details in ShareConnect before submitting. No stop-loss or automatic exit is included.</p>
+      <p>Confirm current price, whole-share quantity, existing positions and order details in ShareConnect before submitting. BT+ needs a stop-loss and profit target. This preview does not submit a bracket order.</p>
       {preview.skipped.length > 0 && <ul>{preview.skipped.map((stock, i) =>
         <li key={i}>{stock.symbol || `Row ${stock.row}`}: {stock.reason}</li>)}</ul>}
     </div>}

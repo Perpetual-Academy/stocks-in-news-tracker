@@ -35,7 +35,7 @@ class Broker:
         return copy.deepcopy(self.book)
 
     def instruments(self, symbols):
-        return {symbol: {"code": 123, "lot": 1} for symbol in symbols}
+        return {symbol: {"code": 123, "lot": 1, "tick_size": "0.05"} for symbol in symbols}
 
     def quote(self, code):
         return Decimal("101")
@@ -43,7 +43,7 @@ class Broker:
     def net_position(self, symbol):
         return self.net
 
-    def place(self, symbol, code, side, quantity, limit_price):
+    def place(self, symbol, code, side, quantity, limit_price, *, stop_price, target_price):
         self.limit_prices.append(limit_price)
         self.calls.append((symbol, code, side, quantity))
         if self.uncertain:
@@ -68,7 +68,7 @@ class ExecutionTests(unittest.TestCase):
         Clock.value = datetime(2026, 9, 14, 9, 30, 1, tzinfo=s.IST)
         for target, value in [("DB_PATH", Path(folder.name) / "test.sqlite3"), ("datetime", Clock)]:
             p = patch.object(s, target, value); p.start(); self.addCleanup(p.stop)
-        self.settings = s.UmbraSettings(order_value="1000", entry_time="09:30")
+        self.settings = s.UmbraSettings(order_value="1000", entry_time="09:30", profit_target_percent="2")
         with s.database() as db:
             db.execute("INSERT INTO settings VALUES ('umbra', ?)", (self.settings.model_dump_json(),))
         s.store_control({"enabled": True, "since": "2026-09-14T09:00:00+05:30", "customer_id": "account-test"})
@@ -157,8 +157,8 @@ class ExecutionTests(unittest.TestCase):
 
     def test_limit_bt_payload_has_no_stop(self):
         for side, expected in [("BUY", "B"), ("SELL", "S")]:
-            payload = limit_payload("account", "login", "AAA", 123, side, 9, Decimal("101.05"))
-            self.assertEqual(payload["productType"], "BIGTRADE")
+            payload = limit_payload("account", "login", "AAA", 123, side, 9, Decimal("101.05"), stop_price="100" if side == "BUY" else "102", target_price="103" if side == "BUY" else "99")
+            self.assertEqual(payload["productType"], "BIGTRADEPLUS")
             self.assertEqual(payload["transactionType"], expected)
             self.assertEqual(payload["price"], "101.05")
             self.assertEqual(payload["triggerPrice"], "0")
@@ -216,7 +216,7 @@ class ExecutionTests(unittest.TestCase):
     def reschedule(self, time):
         with patch.object(s, "ShareConnectBT", return_value=self.broker), patch.object(s, "WORKER_ACTIVE", True):
             s.toggle(False)
-            s.save_settings(s.UmbraSettings(order_value="1000", entry_time=time))
+            s.save_settings(s.UmbraSettings(order_value="1000", entry_time=time, profit_target_percent="2"))
             s.toggle(True)
 
     def test_empty_run_can_be_rescheduled_without_overwriting_history(self):

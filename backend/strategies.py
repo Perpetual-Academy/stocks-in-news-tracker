@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 from pydantic import BaseModel, Field, model_validator
 from backend import google_sheets
-from backend.umbra_broker import ShareConnectBT, order_state, integer
+from backend.umbra_broker import ShareConnectBT, order_state, integer, bracket_prices
 
 IST = timezone(timedelta(hours=5, minutes=30))
 DB_PATH = google_sheets.DATA_DIR / "strategies.sqlite3"
@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 
 
 class UmbraSettings(BaseModel):
+    profit_target_percent: Decimal | None = Field(default=Decimal("7"), gt=0, lt=100, max_digits=6, decimal_places=2)
     order_value: Decimal | None = Field(default=None, gt=0, max_digits=12, decimal_places=2)
     value_basis: Literal["per_stock"] = "per_stock"
     entry_time: str = Field(default="", pattern=r"^(?:|(?:[01]\d|2[0-3]):[0-5]\d)$")
@@ -61,6 +62,8 @@ def status():
     blockers = []
     if not settings.order_value or not settings.entry_time:
         blockers.append("Save an order value and entry time first.")
+    if settings.profit_target_percent is None:
+        blockers.append("Save a BT+ profit target percentage before enabling Umbra. Stop-loss is 1%.")
     try:
         ShareConnectBT()
     except ValueError as exc:
@@ -130,7 +133,7 @@ def select_candidates(values, today):
             influence = next(iter(influences))
             candidates.append({"symbol": symbol, "name": str(entries[0][1][1]),
                                "influence": influence, "side": "SELL" if influence == "positive" else "BUY",
-                               "product": "BT", "order_type": "Limit", "rows": [n for n, _ in entries]})
+                               "product": "BT+", "order_type": "Limit", "rows": [n for n, _ in entries]})
     return {"date": today.isoformat(), "timezone": "Asia/Kolkata", "candidates": candidates, "skipped": skipped}
 
 
@@ -186,10 +189,10 @@ def toggle(enabled):
             broker.reports()  # Read-only check of account and session before arming.
             store_control({"enabled": True, "since": datetime.now(IST).isoformat(),
                            "customer_id": str(broker.customer_id),
-                           "message": "Armed for the next entry time. Entry only, with no stop-loss or automatic exit. Keep the backend running."})
+                           "message": "Armed for the next entry time. BT+ limit entry with 1% stop-loss and the saved profit target. No scheduled exit. Keep the backend running."})
         else:
             control = load_control()
-            control.update(enabled=False, message="New entries stopped. Manage existing positions directly in ShareConnect; automatic exits are disabled.")
+            control.update(enabled=False, message="New entries stopped. Manage existing positions directly in ShareConnect; scheduled exits are disabled.")
             store_control(control)
     return status()
 
@@ -218,7 +221,7 @@ def verify_closed(day, run_id=None):
                 raise ValueError("Positions or pending orders remain. Close or cancel them in ShareConnect before verifying.")
         for order in run["orders"]:
             order["state"] = "closed" if order["state"] != "skipped" else "skipped"
-        run.update(state="complete", message="User requested verification: broker reports no remaining BT positions or pending orders for these stocks.")
+        run.update(state="complete", message="User requested verification: broker reports no remaining BT/BT+ positions or pending orders for these stocks.")
         store_run(run)
     return status()
 
@@ -255,6 +258,7 @@ def enter(run, broker, now):
                 order.update(state="skipped", message="Existing orders or position for this stock; skipped to keep Umbra separate.")
                 continue
             price = broker.quote(order["code"])
+            stop, target = bracket_prices(price, order["side"], run["settings"].get("profit_target_percent"), order.get("tick_size"))
             qty = int(Decimal(run["settings"]["order_value"]) / price / order["lot"]) * order["lot"]
             if qty < order["lot"]:
                 order.update(state="skipped", message="Order value is below one tradable lot.")
@@ -270,9 +274,11 @@ def enter(run, broker, now):
                 if not control["enabled"] or control.get("since") != run["armed_since"]:
                     order.update(state="skipped", message="Umbra was turned off before entry.")
                     continue
-                order.update(quantity=qty, reference_price=str(price), limit_price=str(price), order_type="Limit", state="entry_sending")
+                order.update(quantity=qty, reference_price=str(price), limit_price=str(price), order_type="Limit",
+                             product="BT+", stop_price=str(stop), target_price=str(target), state="entry_sending")
                 store_run(run)  # Durable before the irreversible broker request.
-                order["entry"] = broker.place(symbol, order["code"], order["side"], qty, price)
+                order["entry"] = broker.place(symbol, order["code"], order["side"], qty, price,
+                                             stop_price=stop, target_price=target)
                 order["state"] = "open"
         except Exception:
             if order["state"] == "entry_sending":
@@ -308,7 +314,7 @@ def monitor_entries(run, broker):
             order["filled_quantity"] = filled
             if terminal:
                 order.update(state="filled" if filled else "closed",
-                             message=f"Entry finished with {filled} filled shares. Manage any position in ShareConnect; no automatic exit.")
+                             message=f"Entry finished with {filled} filled shares. Manage any position in ShareConnect; no scheduled exit.")
             else:
                 order["message"] = f"{filled} shares filled; entry still pending. Manage this order in ShareConnect."
         except ValueError as exc:
@@ -353,6 +359,8 @@ def tick(now=None, broker_factory=ShareConnectBT):
         return
     settings = load_settings()
     day = now.date().isoformat()
+    if settings.profit_target_percent is None:
+        return  # An explicitly cleared target must not submit a bracket.
     entry_at = datetime.fromisoformat(f"{day}T{settings.entry_time}:00+05:30")
     if any(r["day"] == day and r.get("entry_at") == entry_at.isoformat() for r in runs):
         return

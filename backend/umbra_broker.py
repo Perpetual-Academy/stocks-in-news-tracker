@@ -2,7 +2,7 @@
 import json
 import time
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_FLOOR, ROUND_CEILING
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -39,7 +39,28 @@ def order_state(row):
     return filled, terminal
 
 
-def limit_payload(customer_id, login_id, symbol, code, side, quantity, limit_price):
+def bracket_prices(price, side, target_percent, tick_size):
+    try:
+        price, target, tick = map(lambda v: Decimal(str(v)), (price, target_percent, tick_size))
+    except InvalidOperation as exc:
+        raise ValueError("A BT+ profit target and verified instrument tick size are required.") from exc
+    if (side not in {"BUY", "SELL"} or
+            any(not n.is_finite() or n <= 0 for n in (price, target, tick)) or target >= 100):
+        raise ValueError("Valid price, profit target and instrument tick size are required for BT+.")
+    if price % tick:
+        raise ValueError("Entry price is not aligned with the instrument tick size.")
+    sign = Decimal(1 if side == "BUY" else -1)
+    stop = price * (1 - sign * Decimal("0.01"))
+    profit = price * (1 + sign * target / 100)
+    # Round towards entry so the configured distance is not exceeded.
+    stop = (stop / tick).to_integral_value(rounding=ROUND_CEILING if side == "BUY" else ROUND_FLOOR) * tick
+    profit = (profit / tick).to_integral_value(rounding=ROUND_FLOOR if side == "BUY" else ROUND_CEILING) * tick
+    if stop <= 0 or profit <= 0 or not ((stop < price < profit) if side == "BUY" else (profit < price < stop)):
+        raise ValueError("BT+ stop and target must be on opposite sides of the entry price.")
+    return stop, profit
+
+
+def limit_payload(customer_id, login_id, symbol, code, side, quantity, limit_price, *, stop_price, target_price):
     try:
         price = Decimal(str(limit_price))
     except InvalidOperation as exc:
@@ -48,11 +69,16 @@ def limit_payload(customer_id, login_id, symbol, code, side, quantity, limit_pri
         raise ValueError("A valid positive limit price is required.")
     if side not in {"BUY", "SELL"} or quantity <= 0:
         raise ValueError("Invalid order direction or quantity.")
-    return {"customerId": customer_id, "scripCode": integer(code), "tradingSymbol": symbol,
+    stop, target = Decimal(str(stop_price)), Decimal(str(target_price))
+    if any(not n.is_finite() or n <= 0 for n in (stop, target)) or not (
+            (stop < price < target) if side == "BUY" else (target < price < stop)):
+        raise ValueError("Invalid BT+ stop-loss or profit target.")
+    return {"orderId": "", "customerId": customer_id, "scripCode": integer(code), "tradingSymbol": symbol,
             "exchange": "NC", "transactionType": "B" if side == "BUY" else "S",
             "quantity": integer(quantity), "disclosedQty": 0, "price": format(price, "f"), "triggerPrice": "0",
-            "rmsCode": "ANY", "afterHour": "N", "orderType": "NORMAL", "channelUser": login_id,
-            "validity": "GFD", "requestType": "NEW", "productType": "BIGTRADE"}
+            "rmsCode": "ANY", "afterHour": "N", "orderType": "BKT", "channelUser": login_id,
+            "validity": "GFD", "requestType": "NEW", "productType": "BIGTRADEPLUS",
+            "childSlPrice": format(stop, "f"), "bookProfitPrice": format(target, "f")}
 
 
 def receipt(response):
@@ -93,6 +119,7 @@ class ShareConnectBT:
             if len(matches) != 1:
                 raise ValueError(f"{symbol}: no unique NSE equity instrument found in ShareConnect.")
             result[symbol] = {"code": integer(matches[0]["scripCode"]),
+                              "tick_size": matches[0].get("tickSize"),
                               "lot": max(1, integer(matches[0].get("lotSize", 1)))}
         return result
 
@@ -130,17 +157,15 @@ class ShareConnectBT:
         finally:
             socket.close()
 
-    def place(self, symbol, code, side, quantity, limit_price):
-        return receipt(self.client.placeOrder(limit_payload(self.customer_id, self.login_id, symbol, code, side, quantity, limit_price)))
+    def place(self, symbol, code, side, quantity, limit_price, *, stop_price, target_price):
+        return receipt(self.client.placeOrder(limit_payload(self.customer_id, self.login_id, symbol, code, side, quantity, limit_price,
+                                                           stop_price=stop_price, target_price=target_price)))
 
     def cancel(self, order, row):
-        payload = limit_payload(self.customer_id, self.login_id, order["symbol"], order["code"], order["side"], integer(row["orderQty"]), order["limit_price"])
-        payload.update(orderId=order["entry"]["order_id"], rmsCode=row["rmsCode"], requestType="CANCEL")
-        self.client.cancelOrder(payload)
-        # The engine waits for a terminal order-book status, not this acknowledgement.
+        raise ValueError("Manage BT+ bracket cancellations in ShareConnect; automatic cancellation is disabled.")
 
     def net_position(self, symbol):
         rows = [r for r in self.positions() if r.get("tradingSymbol") == symbol and r.get("exchange") == "NC"]
         if any("productType" not in r for r in rows):
             raise ValueError("Broker position product is missing.")
-        return sum(integer(r["netQty"]) for r in rows if r["productType"] in {"BIGTRADE", "BT"})
+        return sum(abs(integer(r["netQty"])) for r in rows if r["productType"] in {"BIGTRADE", "BT", "BIGTRADEPLUS", "BT+"})
