@@ -8,6 +8,31 @@ from backend import strategies as s
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_full_response_retained_with_authentication_redacted(self):
+        broker = object.__new__(ShareConnectBT)
+        broker.customer_id, broker.login_id = '206577', 'AURELPD'
+        broker._response_secrets = ['private-token']
+        broker.client = Mock()
+        broker.client.placeOrder.return_value = json.dumps({'status': 200, 'data': {
+            'orderId': '123', 'rmsCode': 'NC', 'channelUser': 'AURELPD', 'price': '1215.8',
+            'nested': {'access_token': 'private-token', 'note': 'private-token'}}})
+        result = broker.place('AAA', 123, 'SELL', 4, '1215.8', stop_price='1227.9', target_price='1130.7')
+        saved = result['broker_response']['data']
+        self.assertEqual(saved['channelUser'], 'AURELPD')
+        self.assertEqual(saved['price'], '1215.8')
+        self.assertNotIn('private-token', json.dumps(result))
+
+    def test_known_permission_rejection_retains_full_response(self):
+        broker = object.__new__(ShareConnectBT)
+        broker.customer_id, broker.login_id = '206577', 'AURELPD'
+        broker.client = Mock()
+        response = {'status': 400, 'message': "User don't have rights for BIGTRADEPLUS"}
+        broker.client.placeOrder.return_value = response
+        with self.assertRaises(OrderSubmissionError) as result:
+            broker.place('AAA', 123, 'BUY', 1, '100', stop_price='99', target_price='107')
+        self.assertTrue(result.exception.rejected)
+        self.assertEqual(result.exception.diagnostic['response'], response)
+
     def test_receipt_variants(self):
         for key in ('rmsCode', 'rmscode'):
             self.assertEqual(receipt(json.dumps({'status': 200, 'data': {'orderId': '123', key: 'RMS'}})),
@@ -48,6 +73,21 @@ class DiagnosticTests(unittest.TestCase):
 class DiagnosticExecutionTests(unittest.TestCase):
     setUp = ExecutionTests.setUp
     tick = ExecutionTests.tick
+
+    def test_request_is_durable_before_submission_and_settings_can_be_edited_after_attention(self):
+        from backend.umbra_broker import limit_payload
+        self.broker.prepare_payload = lambda *args, **kwargs: limit_payload('206577', 'AURELPD', *args, **kwargs)
+        def place(*args, **kwargs):
+            saved = s.all_runs()[0]['orders'][0]['broker_request']
+            self.assertEqual(saved, kwargs['prepared_payload'])
+            self.assertEqual(saved['channelUser'], 'AURELPD')
+            raise OrderSubmissionError({'message': 'Missing receipt'})
+        self.broker.place = Mock(side_effect=place)
+        self.tick()
+        s.store_control({'enabled': False})
+        s.save_settings(s.UmbraSettings(order_value='1000', entry_time='10:30'))
+        self.assertEqual(s.load_settings().entry_time, '10:30')
+        self.assertEqual(s.all_runs()[0]['state'], 'attention')
 
     def test_rejection_persisted_without_retry(self):
         self.broker.place = Mock(side_effect=OrderSubmissionError({'message': 'Invalid product', 'code': 'E42'}, rejected=True))

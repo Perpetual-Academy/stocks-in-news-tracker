@@ -89,7 +89,7 @@ class OrderSubmissionError(ValueError):
         super().__init__(diagnostic["message"])
 
 
-def safe_broker_text(value, secrets=()):
+def safe_broker_text(value, secrets=(), limit=500):
     """Never persist raw responses, request echoes, URLs, or credential values."""
     if not isinstance(value, (str, int)) or isinstance(value, bool):
         return ""
@@ -99,7 +99,27 @@ def safe_broker_text(value, secrets=()):
     text = re.sub(r"https?://\S+", "[redacted URL]", text, flags=re.I)
     text = re.sub(r"(?i)(bearer\s+)\S+", r"\1[redacted]", text)
     text = re.sub(r"(?i)((?:access[_-]?token|api[_-]?key|vendor[_-]?key|secret|password|authorization|customerId|channelUser)\s*[\"']?\s*[:=]\s*)[^,;\s}]+", r"\1[redacted]", text)
-    return " ".join(text.split())[:500]
+    return " ".join(text.split())[:limit]
+
+
+def retained_response(value, secrets=()):
+    """Retain response structure and order values, redacting authentication data."""
+    if isinstance(value, str):
+        return safe_broker_text(value, secrets, limit=None)
+    if isinstance(value, dict):
+        return {k: ("[redacted]" if any(word in re.sub(r"[^a-z]", "", k.lower())
+                     for word in ("token", "secret", "password", "apikey", "vendorkey", "authorization", "cookie"))
+                    else retained_response(v, secrets)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [retained_response(v, secrets) for v in value]
+    return value
+
+
+def permission_rejected(diagnostic):
+    return (diagnostic.get("status") == "400" and
+            diagnostic.get("message") == "User don't have rights for BIGTRADEPLUS" and
+            diagnostic.get("receipt_has_order_id") is False and
+            diagnostic.get("receipt_has_rms_code") is False)
 
 
 def receipt(response, *, secrets=()):
@@ -132,7 +152,7 @@ def receipt(response, *, secrets=()):
             diagnostic["message"] += " (code: " + code + ")"
         diagnostic["receipt_has_order_id"] = bool(has_id)
         diagnostic["receipt_has_rms_code"] = bool(rms)
-        raise OrderSubmissionError(diagnostic, rejected=rejected and not has_id)
+        raise OrderSubmissionError(diagnostic, rejected=(rejected and not has_id) or permission_rejected(diagnostic))
     return {"order_id": str(order_id), "rms_code": str(rms)}
 
 
@@ -148,6 +168,7 @@ class ShareConnectBT:
         self.client = build_shareconnect_client(creds["api_key"], token, creds.get("vendor_key") or None)
         self.token = token
         self._diagnostic_secrets = [v for v in creds.values() if isinstance(v, str)] + [token]
+        self._response_secrets = [creds.get(k) for k in ("api_key", "api_secret", "access_token", "request_token", "vendor_key")] + [token]
 
     def reports(self):
         rows = data_of(self.client.reports(self.customer_id), list, allow_no_records=True)
@@ -204,9 +225,13 @@ class ShareConnectBT:
         finally:
             socket.close()
 
-    def place(self, symbol, code, side, quantity, limit_price, *, stop_price, target_price):
-        payload = limit_payload(self.customer_id, self.login_id, symbol, code, side, quantity, limit_price,
-                                stop_price=stop_price, target_price=target_price)
+    def prepare_payload(self, symbol, code, side, quantity, limit_price, *, stop_price, target_price):
+        return limit_payload(self.customer_id, self.login_id, symbol, code, side, quantity, limit_price,
+                             stop_price=stop_price, target_price=target_price)
+
+    def place(self, symbol, code, side, quantity, limit_price, *, stop_price, target_price, prepared_payload=None):
+        payload = prepared_payload if prepared_payload is not None else self.prepare_payload(
+            symbol, code, side, quantity, limit_price, stop_price=stop_price, target_price=target_price)
         try:
             response = self.client.placeOrder(payload)
         except Exception as exc:
@@ -214,7 +239,20 @@ class ShareConnectBT:
             category = "timeout" if "timeout" in type(exc).__name__.lower() else "transport_or_sdk_error"
             raise OrderSubmissionError({"stage": "submission", "code": category,
                                         "message": "No usable ShareConnect response was received (" + category + ")."}) from None
-        return receipt(response, secrets=getattr(self, "_diagnostic_secrets", [self.customer_id, self.login_id]))
+        response_body = response
+        if isinstance(response, str):
+            try:
+                response_body = json.loads(response)
+            except ValueError:
+                pass
+        saved_response = retained_response(response_body, getattr(self, "_response_secrets", []))
+        try:
+            result = receipt(response, secrets=getattr(self, "_diagnostic_secrets", [self.customer_id, self.login_id]))
+        except OrderSubmissionError as exc:
+            exc.diagnostic["response"] = saved_response
+            raise
+        result["broker_response"] = saved_response
+        return result
 
     def cancel(self, order, row):
         raise ValueError("Manage BT+ bracket cancellations in ShareConnect; automatic cancellation is disabled.")

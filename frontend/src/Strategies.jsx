@@ -58,7 +58,7 @@ export default function Strategies({ apiBase }) {
   const runActionVerify = (day, run_id) => run(async () => setState(await request("/verify-closed", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ day, run_id })
   })));
-  const locked = busy || !state || state.enabled || state.runs?.some(run => !["complete", "skipped"].includes(run.state));
+  const locked = busy || !state || state.enabled || state.runs?.some(run => !["complete", "skipped", "attention"].includes(run.state));
   return <section className="panel strategies">
     <div className="panel-header"><div><h3>Strategies</h3><p className="muted">Scheduled entries from Stocks in News.</p></div>
       <span className="strategy-badge">IST · India time</span></div>
@@ -108,7 +108,15 @@ export default function Strategies({ apiBase }) {
           onClick={() => runActionVerify(run.day, run.id || run.day)}>Verify positions closed</button>}
         <ul>{run.orders.map(order => <li key={order.symbol}>{order.symbol} · {order.side} · {order.quantity || 0} shares · {order.state}
           {order.entry && ` · Entry ${order.entry.order_id}`}{order.exit && ` · Exit ${order.exit.order_id}`}
-          {order.message && ` · ${order.message}`}</li>)}</ul>
+          {order.message && ` · ${order.message}`}
+          {(order.broker_request || order.entry?.broker_response || order.broker_diagnostic?.response) &&
+            <details><summary>Order request and response</summary>
+              <pre>{JSON.stringify({ submission_started_at: order.submission_started_at,
+                request: order.broker_request, response: order.entry?.broker_response ?? order.broker_diagnostic?.response,
+                diagnostic: order.broker_diagnostic }, null, 2)}</pre>
+              <p className="muted">Authentication keys and tokens are redacted.</p>
+            </details>}
+          </li>)}</ul>
       </div>)}
     </div>}
   </section>;

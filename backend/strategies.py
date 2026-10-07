@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 from pydantic import BaseModel, Field, model_validator
 from backend import google_sheets
-from backend.umbra_broker import ShareConnectBT, order_state, integer, bracket_prices, OrderSubmissionError
+from backend.umbra_broker import ShareConnectBT, order_state, integer, bracket_prices, OrderSubmissionError, permission_rejected
 
 IST = timezone(timedelta(hours=5, minutes=30))
 DB_PATH = google_sheets.DATA_DIR / "strategies.sqlite3"
@@ -82,7 +82,7 @@ def status():
 
 def save_settings(payload):
     with LOCK:
-        if load_control()["enabled"] or any(r["state"] not in {"complete", "skipped"} for r in all_runs()):
+        if load_control()["enabled"] or any(r["state"] not in {"complete", "skipped", "attention"} for r in all_runs()):
             raise ValueError("Turn Umbra off and wait for existing runs to finish before changing settings.")
         with database() as db:
             db.execute("INSERT OR REPLACE INTO settings VALUES ('umbra', ?)", (payload.model_dump_json(),))
@@ -215,7 +215,8 @@ def verify_closed(day, run_id=None):
         reports = broker.reports()
         for order in run["orders"]:
             rows = matching(reports, order["symbol"])
-            if day == datetime.now(IST).date().isoformat() and not rows and order["state"] != "skipped":
+            if (day == datetime.now(IST).date().isoformat() and not rows and order["state"] != "skipped"
+                    and not permission_rejected(order.get("broker_diagnostic", {}))):
                 raise ValueError("An uncertain order is still absent from today's broker report. Check ShareConnect; the run remains paused.")
             if any(not order_state(row)[1] for row in rows) or broker.net_position(order["symbol"]) != 0:
                 raise ValueError("Positions or pending orders remain. Close or cancel them in ShareConnect before verifying.")
@@ -276,9 +277,14 @@ def enter(run, broker, now):
                     continue
                 order.update(quantity=qty, reference_price=str(price), limit_price=str(price), order_type="Limit",
                              product="BT+", stop_price=str(stop), target_price=str(target), state="entry_sending")
+                submission_args = {"stop_price": stop, "target_price": target}
+                if hasattr(broker, "prepare_payload"):
+                    order["broker_request"] = broker.prepare_payload(symbol, order["code"], order["side"], qty, price, **submission_args)
+                    submission_args["prepared_payload"] = dict(order["broker_request"])
+                order["submission_started_at"] = datetime.now(IST).isoformat()
                 store_run(run)  # Durable before the irreversible broker request.
                 order["entry"] = broker.place(symbol, order["code"], order["side"], qty, price,
-                                             stop_price=stop, target_price=target)
+                                             **submission_args)
                 order["state"] = "open"
         except Exception as exc:
             if order["state"] == "entry_sending":
