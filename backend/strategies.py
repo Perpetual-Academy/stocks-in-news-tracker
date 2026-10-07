@@ -337,7 +337,7 @@ def monitor_entries(run, broker):
         finally:
             store_run(run)
     states = {o["state"] for o in run["orders"]}
-    run["state"] = "attention" if "attention" in states else "complete" if states <= {"filled", "closed", "skipped"} else "open"
+    run["state"] = "attention" if "attention" in states else "complete" if states <= {"filled", "closed", "skipped", "rejected"} else "open"
     if run["state"] == "complete":
         run["message"] = "Entry checks complete. Positions are not automatically closed by Umbra."
     store_run(run)
